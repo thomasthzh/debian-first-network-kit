@@ -25,6 +25,7 @@ Debian 12/13 在离线安装、安装器未识别网络、未选择 SSH 任务�
 4. 默认恢复 Debian 官方软件源、安装并启动 OpenSSH；用户可以通过参数跳过。
 5. 所有持久配置写入前均备份，不覆盖无关第三方源，不记录密码或其他秘密。
 6. 同一脚本可以重复执行；已完成的步骤应安全跳过或刷新，不不断追加重复配置。
+7. 所有交互提示、状态摘要和诊断分区默认使用中文，并可通过 `--lang en` 切换英文。
 
 ## 2. 支持范围
 
@@ -64,6 +65,7 @@ Debian 12/13 在离线安装、安装器未识别网络、未选择 SSH 任务�
 ```text
 debian-first-network-kit/
 ├── README.md
+├── README.en.md
 ├── LICENSE
 ├── CHANGELOG.md
 ├── scripts/
@@ -92,19 +94,30 @@ sudo bash bootstrap-network.sh [选项]
 --no-apt           不写入官方 APT 源、不运行 apt update
 --no-ssh           不安装和启动 OpenSSH
 --yes              对计划内修改自动确认
+--lang zh|en       选择输出语言，默认 zh
 --help             显示帮助
 ```
 
 默认行为是恢复网络、DNS 和官方软件源，并安装 SSH。
 
-### 5.2 启动检查
+### 5.2 双语输出
+
+脚本使用稳定的消息键管理中文和英文文本，不根据当前 locale 隐式改变语言：
+
+- 默认 `--lang zh`；
+- `--lang en` 显示英文帮助、确认、错误、进度和最终摘要；
+- 无效语言值必须报错并退出；
+- 写入系统的配置文件保持英文注释，避免 locale 影响解析；
+- 日志使用与本次命令相同的语言，但固定包含稳定的步骤标识，便于搜索。
+
+### 5.3 启动检查
 
 1. 要求 root；非 root 时给出 `sudo bash ...` 示例。
 2. 读取 `/etc/os-release`，仅接受 Debian 12/13。
 3. 创建日志 `/var/log/debian-first-network-kit.log`；日志不包含密码、令牌或环境变量值。
 4. 显示将要修改的文件和服务，并在非 `--yes` 模式下请求确认。
 
-### 5.3 接口发现
+### 5.4 接口发现
 
 候选接口来自 `/sys/class/net`，并满足：
 
@@ -122,7 +135,7 @@ sudo bash bootstrap-network.sh [选项]
 
 脚本先执行 `ip link set IFACE up`，再等待 carrier。没有 `LOWER_UP` 时停止网络修改，并提示检查 LAN/WAN 端口、网线、扩展坞供电和驱动。
 
-### 5.4 DHCP 管理策略
+### 5.5 DHCP 管理策略
 
 如果接口已经具有非链路本地 IPv4 地址和默认路由，跳过 DHCP 配置。
 
@@ -138,7 +151,7 @@ sudo bash bootstrap-network.sh [选项]
 
 脚本等待 DHCP 地址和默认路由，超时后输出 `networkctl status`、地址、路由和日志摘要。
 
-### 5.5 DNS 恢复
+### 5.6 DNS 恢复
 
 检查顺序：
 
@@ -159,7 +172,7 @@ DNS 失败时：
 
 脚本不会删除原备份。教程说明静态 `resolv.conf` 是恢复手段；进入远程管理后可再切换到 NetworkManager 或 systemd-resolved 的完整动态方案。
 
-### 5.6 Debian 官方软件源
+### 5.7 Debian 官方软件源
 
 根据 `VERSION_CODENAME` 生成项目专用源文件：
 
@@ -176,7 +189,7 @@ DNS 失败时：
 
 运行 `apt-get update` 前再次验证 DNS。失败时保留完整错误并给出下一步，不继续安装 SSH。
 
-### 5.7 SSH 安装
+### 5.8 SSH 安装
 
 在 APT 更新成功后：
 
@@ -189,7 +202,7 @@ DNS 失败时：
 
 ## 6. `diagnose-network.sh` 设计
 
-诊断脚本只读运行，可由普通用户执行；需要读取系统日志的部分在有 sudo 时增强。
+诊断脚本只读运行，可由普通用户执行；需要读取系统日志的部分在有 sudo 时增强。默认中文分区名与说明，`--lang en` 切换英文。
 
 输出分区：
 
@@ -256,6 +269,13 @@ DNS 失败时：
 
 不得提供固定设备名示例后让用户无确认直接写盘；涉及 `/dev/sdX` 的操作必须强调先用容量、型号和序列号核对。
 
+### 7.4 仓库语言
+
+- `README.md` 为默认中文首页；
+- `README.en.md` 提供等价的英文快速开始、选项、安全边界和文档索引；
+- 中文 README 顶部链接英文版，英文 README 顶部链接中文版；
+- 详细安装与排障教程以中文为主，英文首页明确脚本可用 `--lang en` 并链接 Debian/Ventoy 官方英文文档。
+
 ## 8. 故障排查映射
 
 | 症状 | 判定 | 处理 |
@@ -286,7 +306,7 @@ DNS 失败时：
 
 - `bash -n` 检查所有 Shell 文件；
 - 若存在 ShellCheck，则执行 ShellCheck；
-- `tests/smoke-test.sh` 验证帮助、非法参数、非 Debian 拒绝、候选接口选择和配置渲染；
+- `tests/smoke-test.sh` 验证中英文帮助、非法语言、非法参数、非 Debian 拒绝、候选接口选择和配置渲染；
 - 搜索仓库中是否意外出现本次真实凭据、地址、主机名或临时文件；
 - 检查 Markdown 链接和代码块。
 

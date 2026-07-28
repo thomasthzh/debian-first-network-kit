@@ -15,6 +15,7 @@
 - `.gitattributes`: keep shell scripts LF-only when edited or copied from Windows.
 - `.gitignore`: exclude local logs, test scratch files, and editor artifacts.
 - `README.md`: project overview, quick start, safety boundary, documentation index.
+- `README.en.md`: equivalent English quick start, options, and safety boundary.
 - `LICENSE`: MIT license.
 - `CHANGELOG.md`: initial release notes.
 - `scripts/bootstrap-network.sh`: state-changing recovery workflow.
@@ -801,7 +802,106 @@ git add scripts/bootstrap-network.sh tests/smoke-test.sh
 git commit -m "Add DNS APT and SSH recovery"
 ```
 
-### Task 7: Write the installation and boot-media guide
+### Task 7: Add default-Chinese and optional-English output
+
+**Files:**
+- Modify: `scripts/bootstrap-network.sh`
+- Modify: `scripts/diagnose-network.sh`
+- Modify: `tests/smoke-test.sh`
+
+- [ ] **Step 1: Add failing bilingual CLI tests**
+
+Append before the final success message in `tests/smoke-test.sh`:
+
+```bash
+zh_help="$("$bootstrap" --help)"
+en_help="$("$bootstrap" --lang en --help)"
+grep -q '用法：' <<<"$zh_help" || fail "default help must be Chinese"
+grep -q '^Usage:' <<<"$en_help" || fail "English help is missing"
+
+zh_diagnose="$("$diagnose" --help)"
+en_diagnose="$("$diagnose" --lang en --help)"
+grep -q '只读' <<<"$zh_diagnose" || fail "diagnostic default help must be Chinese"
+grep -q 'read-only' <<<"$en_diagnose" || fail "diagnostic English help is missing"
+
+if "$bootstrap" --lang fr --help >/dev/null 2>&1; then
+  fail "unsupported language must be rejected"
+fi
+```
+
+- [ ] **Step 2: Run and verify failure**
+
+Expected: the default-help Chinese assertion fails because both scripts still emit English.
+
+- [ ] **Step 3: Add stable message keys and language parsing**
+
+In `scripts/bootstrap-network.sh`, add:
+
+```bash
+LANG_CODE="zh"
+
+msg() {
+  local key="$1"
+  case "${LANG_CODE}:${key}" in
+    zh:usage) printf '用法：sudo bash bootstrap-network.sh [选项]\n' ;;
+    en:usage) printf 'Usage: sudo bash bootstrap-network.sh [options]\n' ;;
+    zh:confirm) printf '将配置有线 DHCP，并可能更新 DNS、APT 和 SSH。继续吗？[y/N] ' ;;
+    en:confirm) printf 'Configure wired DHCP and possibly update DNS, APT and SSH? [y/N] ' ;;
+    zh:only_debian) printf '仅支持 Debian 12/13。' ;;
+    en:only_debian) printf 'Only Debian 12/13 is supported.' ;;
+    zh:complete) printf '网络恢复完成。' ;;
+    en:complete) printf 'Network recovery complete.' ;;
+    *) printf '[%s]' "$key" ;;
+  esac
+}
+```
+
+Update argument parsing:
+
+```bash
+      --lang)
+        (($# >= 2)) || die "--lang requires zh or en."
+        case "$2" in
+          zh|en) LANG_CODE="$2" ;;
+          *) die "Unsupported language: $2" ;;
+        esac
+        shift 2
+        ;;
+```
+
+Make `usage`, confirmation, supported-release errors, progress labels, and summary call `msg` keys. Keep generated configuration comments in English.
+
+In `scripts/diagnose-network.sh`, parse `--lang zh|en` before `--help`, default `LANG_CODE=zh`, and route section titles through:
+
+```bash
+title() {
+  local key="$1"
+  case "${LANG_CODE}:${key}" in
+    zh:system) printf '系统' ;; en:system) printf 'SYSTEM' ;;
+    zh:links) printf '链路' ;; en:links) printf 'LINKS' ;;
+    zh:addresses) printf '地址' ;; en:addresses) printf 'ADDRESSES' ;;
+    zh:routes) printf '路由' ;; en:routes) printf 'ROUTES' ;;
+    zh:dns) printf 'DNS' ;; en:dns) printf 'DNS' ;;
+    zh:managers) printf '网络管理器' ;; en:managers) printf 'NETWORK MANAGERS' ;;
+    zh:apt) printf 'APT 软件源' ;; en:apt) printf 'APT' ;;
+    zh:ssh) printf 'SSH 服务' ;; en:ssh) printf 'SSH' ;;
+    zh:logs) printf '最近日志' ;; en:logs) printf 'RECENT LOGS' ;;
+  esac
+}
+```
+
+- [ ] **Step 4: Run tests and commit**
+
+Run smoke tests and `git diff --check`.
+
+Commit:
+
+```powershell
+git add scripts/bootstrap-network.sh scripts/diagnose-network.sh tests/smoke-test.sh
+git commit -m "Add Chinese and English CLI output"
+```
+
+### Task 8: Write the installation and boot-media guide
 
 **Files:**
 - Create: `docs/installation-guide.md`
@@ -884,11 +984,12 @@ git add docs/installation-guide.md
 git commit -m "Document Debian installation workflow"
 ```
 
-### Task 8: Write troubleshooting and README
+### Task 9: Write troubleshooting and bilingual README
 
 **Files:**
 - Create: `docs/troubleshooting.md`
 - Create: `README.md`
+- Create: `README.en.md`
 
 - [ ] **Step 1: Write symptom-driven troubleshooting**
 
@@ -936,14 +1037,31 @@ Also include:
 - MIT license;
 - no `curl | sh` installation.
 
+Create `README.en.md` with the same support matrix, quick-start commands, CLI options, backup policy, non-goals, and license. Link the two README files at the top:
+
+```markdown
+[English](README.en.md)
+```
+
+```markdown
+[中文](README.md)
+```
+
+Document that scripts default to Chinese and accept:
+
+```bash
+sudo bash scripts/bootstrap-network.sh --lang en
+bash scripts/diagnose-network.sh --lang en
+```
+
 - [ ] **Step 3: Commit**
 
 ```powershell
-git add README.md docs/troubleshooting.md
+git add README.md README.en.md docs/troubleshooting.md
 git commit -m "Add usage and troubleshooting guides"
 ```
 
-### Task 9: Run local validation and privacy review
+### Task 10: Run local validation and privacy review
 
 **Files:**
 - Modify only if validation identifies defects.
@@ -988,7 +1106,7 @@ Run:
 git tag -a v1.0.0 -m "Debian First Network Kit 1.0.0"
 ```
 
-### Task 10: Copy to the verified Kingston data partition
+### Task 11: Copy to the verified Kingston data partition
 
 **Files:**
 - Copy project tree to: `G:\debian-first-network-kit`
@@ -1049,37 +1167,34 @@ foreach ($relative in $tracked) {
 
 Expected: all tracked files exist and hashes match.
 
-### Task 11: Create and publish the public GitHub repository
+### Task 12: Publish the completed release to the public GitHub repository
 
 **Files:**
 - No project content changes expected.
 
-- [ ] **Step 1: Recheck GitHub authentication and repository-name availability**
+- [ ] **Step 1: Recheck GitHub authentication and the existing baseline repository**
 
 Run:
 
 ```powershell
 gh auth status
-gh repo view thomasthzh/debian-first-network-kit
+gh repo view thomasthzh/debian-first-network-kit `
+  --json nameWithOwner,visibility,url,defaultBranchRef
 ```
 
-Expected: authenticated as `thomasthzh`; repository lookup returns not found before creation. If it exists, inspect it and stop rather than overwrite.
+Expected: authenticated as `thomasthzh`; repository is public and its default branch is `main`.
 
-- [ ] **Step 2: Create the public repository and push main**
+- [ ] **Step 2: Push the completed main branch and release tag**
 
 Run:
 
 ```powershell
-gh repo create thomasthzh/debian-first-network-kit `
-  --public `
-  --description 'Offline-friendly Debian 12/13 wired networking, DNS, APT and SSH bootstrap kit' `
-  --source . `
-  --remote origin `
-  --push
+git remote get-url origin
+git push origin main
 git push origin v1.0.0
 ```
 
-Expected: repository is created, `main` and tag `v1.0.0` are pushed.
+Expected: the existing repository receives the completed `main` branch and tag `v1.0.0`.
 
 - [ ] **Step 3: Verify remote contents**
 
@@ -1101,7 +1216,7 @@ Expected:
 - local branch tracks `origin/main`;
 - working tree is clean.
 
-### Task 12: Final delivery summary
+### Task 13: Final delivery summary
 
 **Files:**
 - No changes.

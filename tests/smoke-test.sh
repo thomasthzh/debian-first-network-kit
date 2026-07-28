@@ -90,6 +90,45 @@ fi
 "$bootstrap" --help >/dev/null
 [[ -f "$diagnose" ]] || fail "missing $diagnose"
 bash -n "$diagnose"
+# shellcheck disable=SC1090
+source "$diagnose"
+
+redacted="$(printf '%s\n' \
+  'URIs: https://user:topsecret@example.invalid/debian' \
+  'Mirror: https://token-only-secret@example.invalid/debian' \
+  'password=hunter2 token: abc123 Authorization: token ghp_authsecret api-key=key-secret' \
+  'access_token=access-secret refresh_token: refresh-secret client_secret=client-secret github_token: github-secret' \
+  'psk=wifi-psk-material wifi_psk: wifi-profile-material private_key=private-key-material' \
+  'proxy credentials: Bearer bearer-secret' \
+  'safe setting: keep-this-value' \
+  'password authentication disabled' | redact_sensitive)"
+grep -Fq 'topsecret' <<<"$redacted" && fail "URI credentials must be redacted"
+grep -Fq 'token-only-secret' <<<"$redacted" && fail "token-only URI credentials must be redacted"
+grep -Fq 'hunter2' <<<"$redacted" && fail "password values must be redacted"
+grep -Fq 'abc123' <<<"$redacted" && fail "token values must be redacted"
+grep -Fq 'ghp_authsecret' <<<"$redacted" && fail "authorization values must be redacted"
+grep -Fq 'bearer-secret' <<<"$redacted" && fail "Bearer tokens must be redacted"
+grep -Fq 'key-secret' <<<"$redacted" && fail "API key values must be redacted"
+grep -Fq 'access-secret' <<<"$redacted" && fail "access_token values must be redacted"
+grep -Fq 'refresh-secret' <<<"$redacted" && fail "refresh_token values must be redacted"
+grep -Fq 'client-secret' <<<"$redacted" && fail "client_secret values must be redacted"
+grep -Fq 'github-secret' <<<"$redacted" && fail "github_token values must be redacted"
+grep -Fq 'wifi-psk-material' <<<"$redacted" && fail "psk values must be redacted"
+grep -Fq 'wifi-profile-material' <<<"$redacted" && fail "wifi_psk values must be redacted"
+grep -Fq 'private-key-material' <<<"$redacted" && fail "private_key values must be redacted"
+grep -Fq 'https://[REDACTED]@example.invalid/debian' <<<"$redacted" ||
+  fail "URI redaction must retain the host and path"
+grep -Fq 'Mirror: https://[REDACTED]@example.invalid/debian' <<<"$redacted" ||
+  fail "token-only URI redaction must retain the host and path"
+grep -Fq 'safe setting: keep-this-value' <<<"$redacted" ||
+  fail "safe text must be retained"
+grep -Fq 'password authentication disabled' <<<"$redacted" ||
+  fail "safe prose must remain readable"
 "$diagnose" --help >/dev/null
+if "$diagnose" --unknown >/dev/null 2>&1; then
+  fail "unknown diagnose option must fail"
+else
+  assert_eq "2" "$?" "unknown diagnose option exit status"
+fi
 
 printf 'All smoke tests passed.\n'

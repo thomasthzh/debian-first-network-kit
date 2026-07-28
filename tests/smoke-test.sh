@@ -24,6 +24,16 @@ export DFNK_SOURCE_ONLY=1
 source "$bootstrap"
 unset DFNK_SOURCE_ONLY
 
+if ! validate_interface_name enp2s0; then
+  fail "ordinary Ethernet interface name must be accepted"
+fi
+if validate_interface_name ../bad >/dev/null 2>&1; then
+  fail "unsafe interface name must be rejected"
+fi
+stamp="$(backup_stamp)"
+[[ "$stamp" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] ||
+  fail "backup stamp must be UTC in YYYYMMDDTHHMMSSZ format: $stamp"
+
 parse_args --dns 8.8.8.8 --dns 208.67.222.222
 assert_eq "1.1.1.1 9.9.9.9 8.8.8.8 208.67.222.222" "${FALLBACK_DNS[*]}" \
   "DNS options append to fallbacks"
@@ -86,6 +96,90 @@ printf '0\n' >"$scratch/enp2s0/carrier"
 if DFNK_SYS_CLASS_NET="$scratch" choose_unique_carrier "${interfaces[@]}" >/dev/null; then
   fail "no active carrier must be rejected"
 fi
+
+mkdir -p "$scratch/network/interfaces.d"
+printf 'iface enp2s0 inet dhcp\n' >"$scratch/network/interfaces"
+if ! DFNK_IFUPDOWN_ROOT="$scratch/network" ifupdown_is_configured enp2s0; then
+  fail "ifupdown DHCP stanza must be detected"
+fi
+printf 'iface enp2s0 inet static\n  address 192.0.2.10/24\n' >"$scratch/network/interfaces.d/10-static"
+assert_eq "static" "$(DFNK_IFUPDOWN_ROOT="$scratch/network" ifupdown_method enp2s0)" \
+  "non-DHCP stanza in sourced interfaces.d takes ownership"
+rm -f -- "$scratch/network/interfaces.d/10-static"
+printf 'iface enp2s0 inet static\n  address 192.0.2.10/24\n' >"$scratch/network/interfaces"
+if ! DFNK_IFUPDOWN_ROOT="$scratch/network" ifupdown_is_configured enp2s0; then
+  fail "ifupdown static stanza must retain ownership"
+fi
+assert_eq "static" "$(DFNK_IFUPDOWN_ROOT="$scratch/network" ifupdown_method enp2s0)" \
+  "ifupdown static ownership method"
+
+LOG_FILE="$scratch/bootstrap.log"
+has_ipv4_and_default_route() { return 1; }
+ensure_no_manager_conflict() { return 0; }
+if DFNK_IFUPDOWN_ROOT="$scratch/network" recover_dhcp enp2s0 >/dev/null 2>&1; then
+  fail "non-DHCP ifupdown ownership must refuse recovery"
+fi
+unset -f has_ipv4_and_default_route ensure_no_manager_conflict
+
+ASSUME_YES=1
+if DFNK_SYS_CLASS_NET="$scratch" select_wired_interface >/dev/null 2>&1; then
+  fail "ambiguous wired NICs must require --interface under --yes"
+fi
+ASSUME_YES=0
+
+printf 'iface enp2s0 inet manual\n' >"$scratch/network/interfaces"
+assert_eq "manual" "$(DFNK_IFUPDOWN_ROOT="$scratch/network" ifupdown_method enp2s0)" \
+  "ifupdown ownership method"
+
+fake_bin="$scratch/fake-bin"
+mkdir -p "$fake_bin"
+printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in' '  status) printf "%s\n" "${FAKE_NETWORKCTL_STATUS:-}" ;;' '  reload | reconfigure) exit 0 ;;' '  *) exit 1 ;;' 'esac' >"$fake_bin/networkctl"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >>"$FAKE_SYSTEMCTL_LOG"' 'exit 0' >"$fake_bin/systemctl"
+chmod +x "$fake_bin/networkctl" "$fake_bin/systemctl"
+saved_path="$PATH"
+PATH="$fake_bin:$PATH"
+export PATH
+export FAKE_NETWORKCTL_STATUS=$'Setup State: failed\nNetwork File: /etc/systemd/network/10-foreign.network'
+networkmanager_manages_interface() { return 0; }
+if ensure_no_manager_conflict enp2s0 >/dev/null 2>&1; then
+  fail "NetworkManager and failed-state networkd ownership must conflict"
+fi
+unset -f networkmanager_manages_interface
+
+first_backup_path="$(backup_path "$scratch/source")"
+second_backup_path="$(backup_path "$scratch/source")"
+[[ "$first_backup_path" != "$second_backup_path" ]] || fail "backup paths must be unique"
+printf 'original\n' >"$scratch/source"
+backup_file "$scratch/source"
+backup_file "$scratch/source"
+mapfile -t created_backups < <(compgen -G "$scratch/source.debian-first-network-kit.*.bak" || true)
+[[ "${#created_backups[@]}" == 2 ]] || fail "backup must be created without clobbering"
+
+DFNK_NETWORKD_DIR="$scratch/networkd"
+DFNK_NETWORKD_SEARCH_DIRS="$DFNK_NETWORKD_DIR"
+mkdir -p "$DFNK_NETWORKD_DIR"
+write_networkd_config enp2s0
+networkd_project_config="$(networkd_config_path enp2s0)"
+first_networkd_config="$(<"$networkd_project_config")"
+write_networkd_config enp2s0
+assert_eq "$first_networkd_config" "$(<"$networkd_project_config")" "project networkd config idempotency"
+rm -f -- "$networkd_project_config"
+printf '[Match]\nName=enp2s0\n\n[Network]\nDHCP=no\n' >"$DFNK_NETWORKD_DIR/10-foreign.network"
+if write_networkd_config enp2s0 >/dev/null 2>&1; then
+  fail "foreign matching networkd configuration must be refused"
+fi
+rm -f -- "$DFNK_NETWORKD_DIR/10-foreign.network"
+
+fake_systemctl_log="$scratch/systemctl.log"
+export FAKE_SYSTEMCTL_LOG="$fake_systemctl_log"
+export FAKE_NETWORKCTL_STATUS="$(printf 'Setup State: configured\nNetwork File: %s' "$(networkd_config_path enp2s0)")"
+configure_networkd_dhcp enp2s0
+if grep -Fq 'restart systemd-networkd' "$fake_systemctl_log"; then
+  fail "normal networkd reconfigure must not restart all links"
+fi
+PATH="$saved_path"
+export PATH
+unset FAKE_NETWORKCTL_STATUS FAKE_SYSTEMCTL_LOG
 
 "$bootstrap" --help >/dev/null
 [[ -f "$diagnose" ]] || fail "missing $diagnose"

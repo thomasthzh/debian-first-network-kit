@@ -2,18 +2,32 @@
 set -Eeuo pipefail
 
 PROGRAM="diagnose-network.sh"
+LANGUAGE=zh
 
 usage() {
-  cat <<'EOF'
+  if [[ "$LANGUAGE" == en ]]; then
+    cat <<'EOF'
 Usage: bash diagnose-network.sh [--help]
 
 Collects read-only Debian network, DNS, APT, and SSH evidence.
 It does not change configuration.
 EOF
+  else
+    cat <<'EOF'
+用法：bash diagnose-network.sh [--lang zh|en] [--help]
+
+只读收集 Debian 的网卡、地址、路由、DNS、APT、SSH 和近期日志证据。
+本脚本不会修改任何系统配置。
+EOF
+  fi
 }
 
 section() {
-  printf '\n=== %s ===\n' "$1"
+  if [[ "$LANGUAGE" == en ]]; then
+    printf '\n=== %s ===\n' "$2"
+  else
+    printf '\n=== %s ===\n' "$1"
+  fi
 }
 
 redact_sensitive() {
@@ -31,7 +45,11 @@ run_optional() {
   if command -v "$command" >/dev/null 2>&1; then
     "$command" "$@" 2>&1 | redact_sensitive || true
   else
-    printf '%s: not installed\n' "$command"
+    if [[ "$LANGUAGE" == en ]]; then
+      printf '%s: not installed\n' "$command"
+    else
+      printf '%s：未安装\n' "$command"
+    fi
   fi
 }
 
@@ -91,24 +109,27 @@ show_recent_logs() {
 }
 
 main() {
-  case "${1:-}" in
-    '')
-      ;;
-    --help)
-      if (($# == 1)); then
+  while (($#)); do
+    case "$1" in
+      --lang)
+        (($# >= 2)) || { printf '%s: --lang requires zh or en\n' "$PROGRAM" >&2; return 2; }
+        [[ "$2" == zh || "$2" == en ]] ||
+          { printf '%s: --lang must be zh or en\n' "$PROGRAM" >&2; return 2; }
+        LANGUAGE="$2"
+        shift 2
+        ;;
+      --help)
         usage
         return 0
-      fi
-      printf '%s: unknown option: %s\n' "$PROGRAM" "$2" >&2
-      return 2
-      ;;
-    *)
-      printf '%s: unknown option: %s\n' "$PROGRAM" "$1" >&2
-      return 2
-      ;;
-  esac
+        ;;
+      *)
+        printf '%s: unknown option: %s\n' "$PROGRAM" "$1" >&2
+        return 2
+        ;;
+    esac
+  done
 
-  section 'SYSTEM'
+  section '系统' 'SYSTEM'
   if [[ -r /etc/os-release ]]; then
     grep -E '^(PRETTY_NAME|VERSION_ID|VERSION_CODENAME)=' /etc/os-release 2>&1 |
       redact_sensitive || true
@@ -117,34 +138,34 @@ main() {
   fi
   uname -a 2>&1 || true
 
-  section 'LINKS'
+  section '链路' 'LINKS'
   run_optional ip -br link
   show_carriers
 
-  section 'ADDRESSES'
+  section '地址' 'ADDRESSES'
   run_optional ip -br address
 
-  section 'ROUTES'
+  section '路由' 'ROUTES'
   run_optional ip route show
 
-  section 'DNS'
+  section '域名解析' 'DNS'
   show_resolver
 
-  section 'NETWORK MANAGERS'
+  section '网络管理器' 'NETWORK MANAGERS'
   run_optional systemctl is-active NetworkManager
   run_optional systemctl is-active systemd-networkd
   run_optional systemctl is-active networking
   run_optional nmcli device status
   run_optional networkctl list
 
-  section 'APT'
+  section '软件源' 'APT'
   show_apt_sources
 
-  section 'SSH'
+  section 'SSH 服务' 'SSH'
   run_optional systemctl status ssh --no-pager
   run_optional ss -lntp
 
-  section 'RECENT LOGS'
+  section '近期日志' 'RECENT LOGS'
   show_recent_logs
 }
 

@@ -18,6 +18,10 @@ else
 fi
 DFNK_RUN_DIR="${DFNK_RUN_DIR:-/run}"
 DFNK_LOCK_FILE="${DFNK_LOCK_FILE:-$DFNK_RUN_DIR/debian-first-network-kit.lock}"
+DFNK_RESOLV_CONF="${DFNK_RESOLV_CONF:-/etc/resolv.conf}"
+DFNK_APT_DIR="${DFNK_APT_DIR:-/etc/apt}"
+DFNK_APT_SOURCES_FILE="${DFNK_APT_SOURCES_FILE:-$DFNK_APT_DIR/sources.list.d/debian-first-network-kit.sources}"
+DFNK_KEYRING="${DFNK_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}"
 ASSUME_YES=0
 DO_APT=1
 DO_SSH=1
@@ -25,9 +29,19 @@ REQUESTED_INTERFACE=""
 FALLBACK_DNS=(1.1.1.1 9.9.9.9)
 SHOW_HELP=0
 NETWORKD_FALLBACK_APPROVED=0
+LANGUAGE=zh
+
+text() {
+  if [[ "$LANGUAGE" == en ]]; then
+    printf '%s' "$2"
+  else
+    printf '%s' "$1"
+  fi
+}
 
 usage() {
-  cat <<EOF
+  if [[ "$LANGUAGE" == en ]]; then
+    cat <<EOF
 Usage: $PROGRAM [OPTIONS]
 
 Options:
@@ -36,8 +50,23 @@ Options:
   --no-apt           Do not configure APT.
   --no-ssh           Do not configure SSH.
   --yes              Do not ask for confirmation.
+  --lang zh|en       Select Chinese (default) or English.
   --help             Show this help text.
 EOF
+  else
+    cat <<EOF
+用法：sudo bash $PROGRAM [选项]
+
+选项：
+  --interface 网卡    指定物理有线网卡，例如 enp2s0。
+  --dns 地址          追加备用 DNS；可重复使用。
+  --no-apt            不修复 APT 官方软件源，也不执行 apt update。
+  --no-ssh            不安装或启动 OpenSSH Server。
+  --yes               显示方案后自动确认；多网卡歧义仍会停止。
+  --lang zh|en        选择中文（默认）或英文。
+  --help              显示帮助。
+EOF
+  fi
 }
 
 die() {
@@ -63,6 +92,12 @@ parse_args() {
       --no-apt) DO_APT=0; shift ;;
       --no-ssh) DO_SSH=0; shift ;;
       --yes) ASSUME_YES=1; shift ;;
+      --lang)
+        (($# >= 2)) || { die "--lang requires zh or en"; return $?; }
+        [[ "$2" == zh || "$2" == en ]] || { die "--lang must be zh or en"; return $?; }
+        LANGUAGE="$2"
+        shift 2
+        ;;
       --help) SHOW_HELP=1; shift ;;
       *) die "unknown option: $1"; return $? ;;
     esac
@@ -460,12 +495,126 @@ print_recovery_plan() {
   method="$(ifupdown_method "$interface" 2>/dev/null || true)"
   [[ "$backend" == "ifupdown (dhcp)" && "$method" == dhcp ]] &&
     fallback='if ifup fails, use the project systemd-networkd DHCP configuration'
-  printf 'Network recovery plan:\n'
-  printf '  NIC: %s\n' "$interface"
-  printf '  Backend: %s\n' "$backend"
-  printf '  Project networkd file: %s\n' "$target"
-  printf '  Services: NetworkManager is used only when active; systemd-networkd is enabled/started only when needed, then reloaded and reconfigured for this NIC.\n'
-  printf '  Potential fallback: %s\n' "$fallback"
+  if [[ "$LANGUAGE" == en ]]; then
+    printf 'Network recovery plan:\n'
+    printf '  NIC: %s\n' "$interface"
+    printf '  Backend: %s\n' "$backend"
+    printf '  Project networkd file: %s\n' "$target"
+    printf '  Services: use the active manager; networkd changes only this NIC and is never restarted globally.\n'
+    printf '  Potential fallback: %s\n' "$fallback"
+    printf '  After DHCP: repair DNS, configure official Debian APT sources%s%s.\n' \
+      "$([[ "$DO_APT" == 1 ]] && printf ', update packages' || true)" \
+      "$([[ "$DO_SSH" == 1 ]] && printf ', install/start SSH' || true)"
+  else
+    printf '即将执行的联网方案：\n'
+    printf '  有线网卡：%s\n' "$interface"
+    printf '  网络后端：%s\n' "$backend"
+    printf '  networkd 配置：%s\n' "$target"
+    printf '  安全策略：沿用当前管理器；仅重载此网卡，绝不全局重启 networkd。\n'
+    printf '  备用方案：%s\n' "$([[ "$fallback" == none ]] && printf '无' || printf '%s' "$fallback")"
+    printf '  DHCP 后：修复 DNS，写入 Debian 官方软件源%s%s。\n' \
+      "$([[ "$DO_APT" == 1 ]] && printf '、更新软件索引' || true)" \
+      "$([[ "$DO_SSH" == 1 ]] && printf '、安装并启动 SSH' || true)"
+  fi
+}
+
+dns_resolves() {
+  getent ahosts deb.debian.org >/dev/null 2>&1
+}
+
+repair_dns() {
+  local interface="$1" temporary address
+  if dns_resolves; then
+    log_message "DNS already resolves deb.debian.org"
+    return 0
+  fi
+
+  if service_is_active systemd-resolved && command -v resolvectl >/dev/null 2>&1; then
+    resolvectl dns "$interface" "${FALLBACK_DNS[@]}" || return 1
+    resolvectl domain "$interface" '~.' || return 1
+    resolvectl flush-caches >/dev/null 2>&1 || true
+  else
+    backup_file "$DFNK_RESOLV_CONF" || return 1
+    temporary="$(mktemp "${DFNK_RESOLV_CONF}.debian-first-network.XXXXXX")" || return 1
+    for address in "${FALLBACK_DNS[@]}"; do
+      printf 'nameserver %s\n' "$address"
+    done >"$temporary"
+    rm -f -- "$DFNK_RESOLV_CONF"
+    install -m 0644 -- "$temporary" "$DFNK_RESOLV_CONF"
+    rm -f -- "$temporary"
+  fi
+
+  dns_resolves || {
+    printf '%s\n' "$(text 'DNS 仍无法解析 deb.debian.org，请检查上游路由器或运营商网络。' \
+      'DNS still cannot resolve deb.debian.org; check the router or upstream network.')" >&2
+    return 1
+  }
+  log_message "DNS repair completed on $interface"
+}
+
+write_official_apt_sources() (
+  local codename="$1" temporary keyring=""
+  mkdir -p -- "$DFNK_APT_DIR/sources.list.d" || return 1
+  [[ -r "$DFNK_KEYRING" ]] && keyring="$DFNK_KEYRING"
+  temporary="$(mktemp "$DFNK_APT_DIR/sources.list.d/.debian-first-network.XXXXXX")" || return 1
+  cleanup_apt_temporary() { rm -f -- "$temporary"; }
+  trap cleanup_apt_temporary EXIT INT TERM
+  render_debian_sources "$codename" "$keyring" >"$temporary" || return 1
+  if [[ -f "$DFNK_APT_SOURCES_FILE" ]] && cmp -s -- "$temporary" "$DFNK_APT_SOURCES_FILE"; then
+    return 0
+  fi
+  backup_file "$DFNK_APT_SOURCES_FILE" || return 1
+  install -m 0644 -- "$temporary" "$DFNK_APT_SOURCES_FILE"
+  log_message "Wrote official Debian APT sources: $DFNK_APT_SOURCES_FILE"
+)
+
+apt_with_project_sources() {
+  apt-get \
+    -o "Dir::Etc::sourcelist=$DFNK_APT_SOURCES_FILE" \
+    -o "Dir::Etc::sourceparts=-" \
+    -o "APT::Get::List-Cleanup=0" \
+    "$@"
+}
+
+configure_apt() {
+  local codename="$1"
+  write_official_apt_sources "$codename" || return 1
+  apt_with_project_sources update || {
+    printf '%s\n' "$(text \
+      'APT 官方源更新失败。若提示缺少公钥/Keyring，请用 Debian 安装 U 盘重新安装 debian-archive-keyring，再重试。' \
+      'Official APT update failed. If a key/keyring is missing, reinstall debian-archive-keyring from the Debian installer media and retry.')" >&2
+    return 1
+  }
+  apt_with_project_sources install -y debian-archive-keyring ca-certificates || return 1
+  write_official_apt_sources "$codename" || return 1
+  apt_with_project_sources update
+  log_message "Official Debian APT sources updated for $codename"
+}
+
+configure_ssh() {
+  if ! dpkg-query -W -f='${Status}' openssh-server 2>/dev/null |
+    grep -q 'ok installed'; then
+    ((DO_APT)) || {
+      printf '%s\n' "$(text \
+        '系统尚未安装 openssh-server；请去掉 --no-apt 后重新运行。' \
+        'openssh-server is not installed; rerun without --no-apt.')" >&2
+      return 1
+    }
+    apt_with_project_sources install -y openssh-server || return 1
+  fi
+  systemctl enable --now ssh || return 1
+  log_message "OpenSSH server enabled and started"
+}
+
+print_connection_summary() {
+  local interface="$1" address
+  address="$(ip -4 -o addr show dev "$interface" scope global 2>/dev/null |
+    awk 'NR == 1 { split($4, value, "/"); print value[1] }')"
+  if [[ "$LANGUAGE" == en ]]; then
+    printf '\nCompleted. SSH from another machine with:\n  ssh <user>@%s\n' "${address:-<server-ip>}"
+  else
+    printf '\n完成。现在可在同一局域网的另一台电脑执行：\n  ssh <你的用户名>@%s\n' "${address:-<服务器IP>}"
+  fi
 }
 
 recover_dhcp() {
@@ -556,8 +705,15 @@ main() {
   log_message "Approved network recovery plan: backend=$backend interface=$interface"
   bring_link_up "$interface" || return 1
   recover_dhcp "$interface" || return 1
+  repair_dns "$interface" || return 1
+  if ((DO_APT)); then
+    configure_apt "$codename" || return 1
+  fi
+  if ((DO_SSH)); then
+    configure_ssh || return 1
+  fi
   log_message "DHCP recovery completed on $interface"
-  printf 'Network recovery completed on %s.\n' "$interface"
+  print_connection_summary "$interface"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" && "${DFNK_SOURCE_ONLY:-0}" != "1" ]]; then

@@ -1,1 +1,7 @@
 .worktrees/
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+tests/.scratch/

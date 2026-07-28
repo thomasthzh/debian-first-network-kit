@@ -24,6 +24,10 @@ export DFNK_SOURCE_ONLY=1
 source "$bootstrap"
 unset DFNK_SOURCE_ONLY
 
+parse_args --dns 8.8.8.8 --dns 208.67.222.222
+assert_eq "1.1.1.1 9.9.9.9 8.8.8.8 208.67.222.222" "${FALLBACK_DNS[*]}" \
+  "DNS options append to fallbacks"
+
 assert_eq "bookworm" "$(validate_debian_release debian 12 bookworm)" \
   "Debian 12 validation"
 assert_eq "trixie" "$(validate_debian_release debian 13 trixie)" \
@@ -55,16 +59,20 @@ assert_eq "$expected_trixie_sources" \
 
 scratch="$(mktemp -d)"
 trap 'rm -rf -- "$scratch"' EXIT
-mkdir -p "$scratch"/{lo,enp1s0,enp2s0,wlp3s0,docker0}
-mkdir -p "$scratch/enp1s0/device" "$scratch/enp2s0/device" "$scratch/wlp3s0/wireless"
+mkdir -p "$scratch"/{lo,br-test,brcm0,bridge-test,docker0,enp1s0,enp2s0,virbr0,wlfake0,wlp3s0}
+mkdir -p "$scratch/br-test/device" "$scratch/brcm0/device" "$scratch/bridge-test/device" \
+  "$scratch/enp1s0/device" "$scratch/enp2s0/device" "$scratch/wlp3s0/wireless" \
+  "$scratch/wlfake0/device" "$scratch/virbr0/device"
 printf '0\n' >"$scratch/enp1s0/carrier"
 printf '1\n' >"$scratch/enp2s0/carrier"
 printf '1\n' >"$scratch/wlp3s0/carrier"
 
 mapfile -t interfaces < <(DFNK_SYS_CLASS_NET="$scratch" list_wired_interfaces)
-assert_eq "2" "${#interfaces[@]}" "wired interface count"
-assert_eq "enp1s0" "${interfaces[0]}" "first wired interface"
-assert_eq "enp2s0" "${interfaces[1]}" "second wired interface"
+assert_eq "4" "${#interfaces[@]}" "wired interface count"
+assert_eq "brcm0" "${interfaces[0]}" "physical brcm interface retained"
+assert_eq "bridge-test" "${interfaces[1]}" "physical bridge interface retained"
+assert_eq "enp1s0" "${interfaces[2]}" "third wired interface"
+assert_eq "enp2s0" "${interfaces[3]}" "fourth wired interface"
 assert_eq "enp2s0" "$(DFNK_SYS_CLASS_NET="$scratch" choose_unique_carrier "${interfaces[@]}")" \
   "carrier selection"
 
